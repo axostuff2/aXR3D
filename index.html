@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>3D XR Spatial Launcher</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg: rgba(0, 0, 0, 0.88);
+            --fg: #00ffcc;
+            --border: 2px solid #00ffcc;
+            --font: 'Press Start 2P', monospace;
+        }
+
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+
+        body, html {
+            margin: 0; padding: 0; width: 100vw; height: 100vh;
+            overflow: hidden; background: #000;
+            font-family: var(--font); color: var(--fg);
+        }
+
+        /* 1. Launch & Calibrate Overlay */
+        #launch-overlay {
+            position: absolute; inset: 0; z-index: 9999;
+            background: #000; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 20px;
+            text-align: center; padding: 20px;
+        }
+
+        .hud-box {
+            border: var(--border); background: rgba(0,255,204,0.05);
+            padding: 30px; box-shadow: 0 0 20px rgba(0,255,204,0.2);
+            max-width: 450px; width: 90%;
+        }
+
+        .xr-btn {
+            background: #000; border: var(--border); color: var(--fg);
+            padding: 16px 24px; font-family: var(--font); font-size: 0.8rem;
+            cursor: pointer; text-transform: uppercase;
+            box-shadow: 4px 4px 0px var(--fg);
+            transition: transform 0.1s, background 0.1s, color 0.1s;
+        }
+        .xr-btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0px var(--fg); }
+
+        /* Video Pass-through */
+        #webcam {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: cover; z-index: 1; pointer-events: none;
+        }
+
+        /* AR Canvas for 3D Skeletons & Spatial Overlay */
+        #ar-canvas {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            z-index: 2; pointer-events: none;
+        }
+
+        /* 3D World Container (Perspective Matrix Applied) */
+        #viewport-3d {
+            position: absolute; inset: 0; z-index: 3;
+            perspective: 1000px; /* Gives real physical depth perspective */
+            overflow: hidden; pointer-events: none;
+        }
+
+        #spatial-world {
+            position: absolute; top: 50%; left: 50%;
+            width: 0; height: 0;
+            transform-style: preserve-3d;
+            pointer-events: auto;
+            will-change: transform;
+        }
+
+        /* Window Styling */
+        .window-panel {
+            position: absolute;
+            background: var(--bg); border: var(--border);
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.3);
+            display: flex; flex-direction: column;
+            transform-style: preserve-3d;
+            backface-visibility: hidden;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .window-panel.active-window {
+            border-color: #fff; box-shadow: 0 0 25px rgba(255, 255, 255, 0.6);
+        }
+
+        .drag-header {
+            background: var(--fg); color: #000; padding: 8px 12px;
+            font-size: 0.65rem; cursor: grab; display: flex;
+            justify-content: space-between; align-items: center;
+            letter-spacing: -1px;
+        }
+        .window-panel.active-window .drag-header { background: #fff; }
+
+        .win-btn-close {
+            background: #000; color: var(--fg); border: 1px solid #000;
+            padding: 2px 6px; font-family: var(--font); font-size: 0.55rem; cursor: pointer;
+        }
+
+        .window-body {
+            padding: 10px; display: flex; flex-direction: column;
+            gap: 10px; flex-grow: 1; height: calc(100% - 30px);
+        }
+
+        iframe { border: 1px solid var(--fg); background: #111; width: 100%; height: 100%; }
+
+        /* Floating App Dock (Bottom Launcher) */
+        #app-dock {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 100; display: flex; gap: 10px; background: rgba(0,0,0,0.9);
+            border: var(--border); padding: 8px 12px; pointer-events: auto;
+            box-shadow: 0 0 20px rgba(0,255,204,0.4);
+        }
+        .dock-item {
+            background: #000; border: 1px solid var(--fg); color: var(--fg);
+            padding: 8px 10px; font-family: var(--font); font-size: 0.55rem;
+            cursor: pointer; white-space: nowrap;
+        }
+        .dock-item:active { background: var(--fg); color: #000; }
+
+        /* Virtual Keyboard Layout */
+        #keyboard { display: flex; flex-direction: column; gap: 6px; }
+        .kb-row { display: flex; justify-content: center; gap: 6px; }
+        .kb-key {
+            width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+            font-size: 0.6rem; border: 1px solid var(--fg); background: #000; color: var(--fg);
+            font-family: var(--font); cursor: pointer;
+        }
+        .kb-key.wide { width: 80px; font-size: 0.5rem; }
+        .kb-key.pressed { background: var(--fg); color: #000; }
+
+        /* AR Cursors */
+        .cursor {
+            position: absolute; width: 20px; height: 20px;
+            border: 2px solid var(--fg); border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 9999;
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .cursor::after {
+            content: ''; position: absolute; top: 50%; left: 50%;
+            width: 4px; height: 4px; background: var(--fg);
+            transform: translate(-50%, -50%); border-radius: 50%;
+        }
+        .cursor.pinched { border-color: #ff0055; background: rgba(255,0,85,0.3); }
+        .cursor.pinched::after { background: #ff0055; }
+
+        /* Dynamic HUD Info */
+        #hud-stats {
+            position: absolute; top: 15px; left: 15px; z-index: 100;
+            font-size: 0.5rem; line-height: 1.6; color: rgba(0,255,204,0.7);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Launcher & Calibration Screen -->
+    <div id="launch-overlay">
+        <div class="hud-box">
+            <h2 style="font-size: 0.9rem; margin-bottom: 15px;">XR SPATIAL OS</h2>
+            <p style="font-size: 0.55rem; line-height: 1.8; color: #aaa; margin-bottom: 25px;">
+                1. Fullscreen XR Mode<br>
+                2. Real-World Depth Tracking<br>
+                3. Spatial Anchoring
+            </p>
+            <button id="start-btn" class="xr-btn">INITIATE XR & CALIBRATE</button>
+        </div>
+    </div>
+
+    <div id="hud-stats">XR_ENGINE: READY<br>PARALLAX: 6-DOF SIM<br>FPS: 60</div>
+
+    <!-- Pass-Through Camera -->
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="ar-canvas"></canvas>
+
+    <!-- 3D Spatial World Layer -->
+    <div id="viewport-3d">
+        <div id="spatial-world"></div>
+    </div>
+
+    <!-- Floating Launcher Dock -->
+    <div id="app-dock">
+        <button class="dock-item" onclick="spawnApp('browser')">+ YOUTUBE/WEB</button>
+        <button class="dock-item" onclick="spawnApp('keyboard')">+ KEYBOARD</button>
+        <button class="dock-item" onclick="spawnApp('notes')">+ PAD</button>
+        <button class="dock-item" onclick="recenterWorld()">⎈ RECENTER</button>
+    </div>
+
+    <!-- Hand Tracked Laser Cursors -->
+    <div id="cursor-0" class="cursor"></div>
+    <div id="cursor-1" class="cursor"></div>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js";
+
+        // Global State & Tracking
+        let handLandmarker;
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("ar-canvas");
+        const ctx = canvas.getContext("2d");
+        const spatialWorld = document.getElementById("spatial-world");
+        const cursors = [document.getElementById('cursor-0'), document.getElementById('cursor-1')];
+
+        // 6-DOF Motion Simulation State
+        let baseGyro = { alpha: 0, beta: 0, gamma: 0 };
+        let currentPos = { x: 0, y: 0, z: 0 }; // Virtual camera position in 3D
+        let targetPos = { x: 0, y: 0, z: 0 };
+        let rot = { x: 0, y: 0 };
+        let targetRot = { x: 0, y: 0 };
+        let vel = { x: 0, y: 0, z: 0 };
+
+        // Interaction State
+        const pinchStates = [false, false];
+        const lastPinchTimes = [0, 0];
+        let draggedWindow = [null, null];
+        let dragOffset3D = [{x:0, y:0, z:0}, {x:0, y:0, z:0}];
+        let windowZPositions = new Map(); // Stores Z-depth for each window panel
+
+        // 1. Initialize MediaPipe Hand Tracker
+        async function initAI() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            document.getElementById('start-btn').innerText = "ENTER SPATIAL XR";
+        }
+        initAI();
+
+        // 2. Fullscreen & Calibration Sequence
+        document.getElementById('start-btn').addEventListener('click', async () => {
+            // Force Fullscreen for XR Immersive feel
+            if (document.documentElement.requestFullscreen) {
+                document.documentElement.requestFullscreen().catch(()=>{});
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+                });
+                video.srcObject = stream;
+                await video.play();
+
+                // Gyroscope & Accelerometer
+                if (window.DeviceOrientationEvent) {
+                    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                        const res = await DeviceOrientationEvent.requestPermission();
+                        if (res === 'granted') {
+                            window.addEventListener('deviceorientation', handleGyro);
+                            window.addEventListener('devicemotion', handleMotion);
+                        }
+                    } else {
+                        window.addEventListener('deviceorientation', handleGyro);
+                        window.addEventListener('devicemotion', handleMotion);
+                    }
+                }
+
+                // Calibrate and launch
+                document.getElementById('launch-overlay').style.display = 'none';
+                spawnApp('browser');
+                spawnApp('keyboard', 0, 180, -100);
+
+                updateCanvasSize();
+                video.addEventListener("loadeddata", predictLoop);
+
+            } catch (err) {
+                alert("Camera & XR Sensors Required. Enable permissions.");
+                console.error(err);
+            }
+        });
+
+        // 3. Sensor Fusion (Gyro + Accelerometer for 6-DOF Room Space)
+        function handleGyro(e) {
+            if (!e.alpha) return;
+            if (baseGyro.alpha === 0) {
+                baseGyro = { alpha: e.alpha, beta: e.beta, gamma: e.gamma };
+            }
+            let a = e.alpha - baseGyro.alpha;
+            let b = e.beta - baseGyro.beta;
+            if (a > 180) a -= 360; if (a < -180) a += 360;
+
+            targetRot.y = a * 15; // Yaw panning
+            targetRot.x = b * 15; // Pitch panning
+        }
+
+        function handleMotion(e) {
+            // Estimate physical movement (step forward/back in room space)
+            const acc = e.accelerationIncludingGravity;
+            if (!acc) return;
+            
+            // Simple double-integration with dampening to simulate walking in room space
+            vel.z += (acc.z || 0) * 0.05;
+            vel.x += (acc.x || 0) * 0.05;
+            
+            // Low pass dampening to prevent infinite drift
+            vel.z *= 0.85;
+            vel.x *= 0.85;
+
+            targetPos.z += vel.z * 10;
+            targetPos.x += vel.x * 10;
+        }
+
+        window.recenterWorld = () => {
+            baseGyro = { alpha: 0, beta: 0, gamma: 0 };
+            targetPos = { x: 0, y: 0, z: 0 };
+            targetRot = { x: 0, y: 0 };
+        };
+
+        // 4. App Spawner System
+        window.spawnApp = (type, customX = 0, customY = 0, customZ = 0) => {
+            const id = 'win_' + Date.now();
+            const panel = document.createElement('div');
+            panel.className = 'window-panel active-window';
+            panel.id = id;
+
+            // Compute default spatial positions
+            const x = customX || (Math.random() * 100 - 50);
+            const y = customY || (Math.random() * 60 - 30);
+            const z = customZ || -200; // Native depth behind screen plane
+
+            windowZPositions.set(id, z);
+            panel.style.transform = `translate3d(${x}px, ${y}px, ${z}px)`;
+
+            let contentHTML = '';
+            if (type === 'browser') {
+                panel.style.width = '550px'; panel.style.height = '350px';
+                contentHTML = `
+                    <div class="drag-header"><span>YOUTUBE / WEB</span><button class="win-btn-close" onclick="closeWin('${id}')">X</button></div>
+                    <div class="window-body">
+                        <div style="display:flex; gap:5px;">
+                            <input type="text" id="url_${id}" value="https://www.youtube.com/embed/LXb3EKWsInQ?autoplay=1" style="flex-grow:1; background:#000; color:var(--fg); border:1px solid var(--fg); font-family:var(--font); font-size:0.55rem; padding:6px;" readonly />
+                            <button class="xr-btn" style="padding:4px 8px; font-size:0.5rem;" onclick="document.getElementById('frame_${id}').src=document.getElementById('url_${id}').value">GO</button>
+                        </div>
+                        <iframe id="frame_${id}" src="https://www.youtube.com/embed/LXb3EKWsInQ?autoplay=1" allow="autoplay; encrypted-media"></iframe>
+                    </div>`;
+            } else if (type === 'keyboard') {
+                panel.style.width = '480px'; panel.style.height = '230px';
+                contentHTML = `
+                    <div class="drag-header"><span>SPATIAL KEYBOARD</span><button class="win-btn-close" onclick="closeWin('${id}')">X</button></div>
+                    <div class="window-body"><div id="keyboard"></div></div>`;
+            } else if (type === 'notes') {
+                panel.style.width = '300px'; panel.style.height = '200px';
+                contentHTML = `
+                    <div class="drag-header"><span>PAD</span><button class="win-btn-close" onclick="closeWin('${id}')">X</button></div>
+                    <div class="window-body">
+                        <textarea style="width:100%; height:100%; background:#000; color:var(--fg); border:1px solid var(--fg); font-family:var(--font); font-size:0.6rem; padding:10px;" placeholder="TYPE SPATIAL NOTES..."></textarea>
+                    </div>`;
+            }
+
+            panel.innerHTML = contentHTML;
+            spatialWorld.appendChild(panel);
+
+            if (type === 'keyboard') buildKeyboard(panel.querySelector('#keyboard'));
+        };
+
+        window.closeWin = (id) => {
+            const el = document.getElementById(id);
+            if (el) { el.remove(); windowZPositions.delete(id); }
+        };
+
+        function buildKeyboard(container) {
+            const keys = [
+                ['q','w','e','r','t','y','u','i','o','p'],
+                ['a','s','d','f','g','h','j','k','l'],
+                ['z','x','c','v','b','n','m','DEL'],
+                ['SPACE','ENTER','CLR']
+            ];
+            keys.forEach(row => {
+                const r = document.createElement('div');
+                r.className = 'kb-row';
+                row.forEach(k => {
+                    const btn = document.createElement('div');
+                    btn.className = 'kb-key' + (['SPACE','ENTER','CLR','DEL'].includes(k) ? ' wide' : '');
+                    btn.innerText = k;
+                    btn.onclick = () => {
+                        const inputs = document.querySelectorAll('input, textarea');
+                        if (inputs.length > 0) {
+                            const active = inputs[0]; // Targeted focused app input
+                            if (k === 'DEL') active.value = active.value.slice(0, -1);
+                            else if (k === 'CLR') active.value = '';
+                            else if (k === 'SPACE') active.value += ' ';
+                            else active.value += k;
+                        }
+                    };
+                    r.appendChild(btn);
+                });
+                container.appendChild(r);
+            });
+        }
+
+        // 5. Screen Mapping & AI Vision Loop
+        function getScreenCoords(normX, normY) {
+            const vR = video.videoWidth / video.videoHeight;
+            const wR = window.innerWidth / window.innerHeight;
+            let scale, xOff = 0, yOff = 0;
+            if (wR > vR) {
+                scale = window.innerWidth / video.videoWidth;
+                yOff = (window.innerHeight - (video.videoHeight * scale)) / 2;
+            } else {
+                scale = window.innerHeight / video.videoHeight;
+                xOff = (window.innerWidth - (video.videoWidth * scale)) / 2;
+            }
+            return { x: (normX * video.videoWidth * scale) + xOff, y: (normY * video.videoHeight * scale) + yOff };
+        }
+
+        function updateCanvasSize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', updateCanvasSize);
+
+        // 6. Main XR Rendering & Interaction Loop
+        function predictLoop() {
+            const now = Date.now();
+
+            // Lerp 6-DOF Parallax Engine
+            currentPos.x += (targetPos.x - currentPos.x) * 0.1;
+            currentPos.y += (targetPos.y - currentPos.y) * 0.1;
+            currentPos.z += (targetPos.z - currentPos.z) * 0.1;
+            rot.x += (targetRot.x - rot.x) * 0.1;
+            rot.y += (targetRot.y - rot.y) * 0.1;
+
+            // Apply 3D matrix transformation to the world layer
+            spatialWorld.style.transform = 
+                `translate3d(${-rot.y - currentPos.x}px, ${-rot.x - currentPos.y}px, ${currentPos.z}px) ` +
+                `rotateX(${rot.x * 0.05}deg) rotateY(${rot.y * 0.05}deg)`;
+
+            // Run Hand Tracking
+            if (video.currentTime !== -1) {
+                const results = handLandmarker.detectForVideo(video, now);
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                cursors.forEach(c => c.style.opacity = '0');
+
+                if (results && results.landmarks) {
+                    results.landmarks.forEach((hand, idx) => {
+                        if (idx > 1) return;
+
+                        const indexTip = getScreenCoords(hand[8].x, hand[8].y);
+                        const thumbTip = getScreenCoords(hand[4].x, hand[4].y);
+
+                        // Draw Laser Wireframe
+                        ctx.beginPath();
+                        ctx.moveTo(thumbTip.x, thumbTip.y);
+                        ctx.lineTo(indexTip.x, indexTip.y);
+                        ctx.strokeStyle = '#00ffcc';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+
+                        const cursor = cursors[idx];
+                        cursor.style.opacity = '1';
+                        cursor.style.left = `${indexTip.x}px`;
+                        cursor.style.top = `${indexTip.y}px`;
+
+                        // 3D Distance Pinch Sensing
+                        const dx = hand[8].x - hand[4].x;
+                        const dy = hand[8].y - hand[4].y;
+                        const dz = hand[8].z - hand[4].z;
+                        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+                        // Convert screen cursor coordinate to spatial 3D world coordinate
+                        const sX = indexTip.x - (window.innerWidth / 2) + rot.y + currentPos.x;
+                        const sY = indexTip.y - (window.innerHeight / 2) + rot.x + currentPos.y;
+
+                        if (dist < 0.045) {
+                            cursor.classList.add('pinched');
+
+                            if (!pinchStates[idx]) {
+                                pinchStates[idx] = true;
+                                lastPinchTimes[idx] = now;
+
+                                // Raycast UI Elements
+                                const elements = document.elementsFromPoint(indexTip.x, indexTip.y);
+                                for (let el of elements) {
+                                    if (el.classList.contains('drag-header')) {
+                                        const win = el.closest('.window-panel');
+                                        draggedWindow[idx] = win;
+                                        
+                                        // Highlight active window
+                                        document.querySelectorAll('.window-panel').forEach(w => w.classList.remove('active-window'));
+                                        win.classList.add('active-window');
+
+                                        const currentZ = windowZPositions.get(win.id) || 0;
+                                        dragOffset3D[idx] = {
+                                            x: sX - win.offsetLeft,
+                                            y: sY - win.offsetTop,
+                                            z: currentZ
+                                        };
+                                        break;
+                                    } else if (el.classList.contains('kb-key') || el.classList.contains('dock-item') || el.classList.contains('win-btn-close') || el.classList.contains('xr-btn')) {
+                                        el.click();
+                                        el.classList.add('pressed');
+                                        setTimeout(() => el.classList.remove('pressed'), 150);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Active Dragging Logic in 3D Space
+                            if (draggedWindow[idx]) {
+                                const win = draggedWindow[idx];
+                                const newX = sX - dragOffset3D[idx].x;
+                                const newY = sY - dragOffset3D[idx].y;
+                                
+                                // Dynamic Z Depth Push/Pull (Move closer/further into the room based on hand depth)
+                                let newZ = dragOffset3D[idx].z + (hand[8].z * -300);
+                                windowZPositions.set(win.id, newZ);
+
+                                win.style.left = `${newX}px`;
+                                win.style.top = `${newY}px`;
+                                win.style.transform = `translate3d(0px, 0px, ${newZ}px)`;
+                            }
+
+                        } else if (dist > 0.065) {
+                            cursor.classList.remove('pinched');
+                            pinchStates[idx] = false;
+                            draggedWindow[idx] = null;
+                        }
+                    });
+                }
+            }
+
+            requestAnimationFrame(predictLoop);
+        }
+    </script>
+</body>
+</html>
+
